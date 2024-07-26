@@ -1,6 +1,6 @@
 import argparse
 from typing import List, Tuple
-
+import torch
 from vllm import EngineArgs, LLMEngine, RequestOutput, SamplingParams
 from vllm.utils import FlexibleArgumentParser
 

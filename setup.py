@@ -8,7 +8,15 @@ import sys
 from shutil import which
 from typing import Dict, List
 
+print("************************")
+print("************************")
+print("************************")
+print(os.__file__)
 import torch
+print("########### ************************")
+print("########### ************************")
+print("########### ************************")
+
 from packaging.version import Version, parse
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext

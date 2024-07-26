@@ -64,6 +64,7 @@ class LlamaMLP(nn.Module):
         bias: bool = False,
     ) -> None:
         super().__init__()
+        print("In MLP, quant_config is : ", quant_config)
         self.gate_up_proj = MergedColumnParallelLinear(
             input_size=hidden_size,
             output_sizes=[intermediate_size] * 2,
@@ -100,6 +101,7 @@ class LlamaAttention(nn.Module):
         cache_config: Optional[CacheConfig] = None,
     ) -> None:
         super().__init__()
+        print("In Attn, quant_config is :", quant_config)
         self.hidden_size = hidden_size
         tp_size = get_tensor_model_parallel_world_size()
         self.total_num_heads = num_heads
@@ -118,6 +120,8 @@ class LlamaAttention(nn.Module):
         self.head_dim = hidden_size // self.total_num_heads
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
+        # print("self.q_size: ", self.q_size)
+        # print("self.kv_size: ", self.kv_size)
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
@@ -159,6 +163,7 @@ class LlamaAttention(nn.Module):
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
+        # print("qkv.shape: ", qkv.shape)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
@@ -196,7 +201,7 @@ class LlamaDecoderLayer(nn.Module):
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
             max_position_embeddings=max_position_embeddings,
-            quant_config=quant_config,
+            quant_config=None, # TODO: (vatshc) HACK
             bias=attention_bias,
             cache_config=cache_config,
         )
@@ -266,13 +271,28 @@ class LlamaModel(nn.Module):
             config.num_hidden_layers,
             get_pp_group().rank_in_group,
             get_pp_group().world_size)
+        # self.layers = nn.ModuleList(
+        #     [nn.Identity() for _ in range(self.start_layer)] + [
+        #         LlamaDecoderLayer(config=config,
+        #                           cache_config=cache_config,
+        #                           quant_config=quant_config)
+        #         for _ in range(self.start_layer, self.end_layer)
+        #     ] + [
+        #         nn.Identity()
+        #         for _ in range(self.end_layer, config.num_hidden_layers)
+        #     ])
+        # TODO: (vatshc) hacky. To skip the fist and layers for quantization.
         self.layers = nn.ModuleList(
-            [nn.Identity() for _ in range(self.start_layer)] + [
+            [nn.Identity() for _ in range(self.start_layer)] + 
+            [LlamaDecoderLayer(config=config, cache_config=cache_config, quant_config=None)] +
+            [
                 LlamaDecoderLayer(config=config,
                                   cache_config=cache_config,
                                   quant_config=quant_config)
-                for _ in range(self.start_layer, self.end_layer)
-            ] + [
+                for _ in range(self.start_layer + 1, self.end_layer - 1)
+            ] + 
+            [LlamaDecoderLayer(config=config, cache_config=cache_config, quant_config=None)] +
+            [
                 nn.Identity()
                 for _ in range(self.end_layer, config.num_hidden_layers)
             ])

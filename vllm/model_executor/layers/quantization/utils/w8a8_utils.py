@@ -100,11 +100,52 @@ def requantize_with_max_scale(
     return max_w_scale, weight
 
 
+# def apply_fp8_linear(
+#     input: torch.Tensor,
+#     weight: torch.Tensor,
+#     weight_scale: torch.Tensor,
+#     input_scale: torch.Tensor,
+#     bias: Optional[torch.Tensor] = None,
+#     cutlass_fp8_supported: bool = True,
+# ) -> torch.Tensor:
+#     # ops.scaled_fp8_quant supports both dynamic and static quant.
+#     #   If dynamic, layer.input_scale is None and x_scale computed from x.
+#     #   If static, layer.input_scale is scalar and x_scale is input_scale.
+
+#     if bias is None and cutlass_fp8_supported:
+#         qinput, x_scale = ops.scaled_fp8_quant(input, input_scale)
+
+#         # Fused GEMM_DQ
+#         output = ops.cutlass_scaled_mm(qinput,
+#                                        weight,
+#                                        out_dtype=input.dtype,
+#                                        scale_a=x_scale,
+#                                        scale_b=weight_scale)
+
+#     else:
+#         qinput, x_scale = ops.scaled_fp8_quant(input,
+#                                                input_scale,
+#                                                batch_dim_padding=17)
+
+#         # Fused GEMM_DQ -- note we padded the input above because
+#         # torch._scaled_mm is more performant for matrices with
+#         # batch dimension > 16. Note that this could change
+#         # in the future.
+#         output, _ = torch._scaled_mm(qinput,
+#                                      weight,
+#                                      out_dtype=input.dtype,
+#                                      scale_a=x_scale,
+#                                      scale_b=weight_scale,
+#                                      bias=bias)
+
+#     return torch.narrow(output, 0, 0, input.shape[0])
+
 def apply_fp8_linear(
     input: torch.Tensor,
     weight: torch.Tensor,
     weight_scale: torch.Tensor,
     input_scale: torch.Tensor,
+    activation_scale_ub: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
     cutlass_fp8_supported: bool = True,
 ) -> torch.Tensor:
@@ -112,7 +153,10 @@ def apply_fp8_linear(
     #   If dynamic, layer.input_scale is None and x_scale computed from x.
     #   If static, layer.input_scale is scalar and x_scale is input_scale.
 
+    # TODO: (vatshc) HACK
+    cutlass_fp8_supported = False
     if bias is None and cutlass_fp8_supported:
+        # raise Exception("in top branch")
         qinput, x_scale = ops.scaled_fp8_quant(input, input_scale)
 
         # Fused GEMM_DQ
@@ -123,21 +167,56 @@ def apply_fp8_linear(
                                        scale_b=weight_scale)
 
     else:
-        qinput, x_scale = ops.scaled_fp8_quant(input,
-                                               input_scale,
-                                               batch_dim_padding=17)
+        # qinput, x_scale = ops.scaled_fp8_quant(input,
+        #                                        input_scale,
+        #                                        batch_dim_padding=17)
+
+        # TODO: (vatshc) this is the "dynamic" activation scaling path whereas looks like they handle both
+        # dynamic and static by setting the input_scale to None for dynamic.
+        
+        
+        # TODO: (vatshc) why are all input rows identical? print upstream. Because of model warm-up -> cuda graph capture
+        # print(input)
+        # print(input.shape)
+
+        qinput, x_scale = torch.ops.fbgemm.quantize_fp8_per_row(
+            input, None, activation_scale_ub)
 
         # Fused GEMM_DQ -- note we padded the input above because
         # torch._scaled_mm is more performant for matrices with
         # batch dimension > 16. Note that this could change
         # in the future.
-        output, _ = torch._scaled_mm(qinput,
-                                     weight,
-                                     out_dtype=input.dtype,
-                                     scale_a=x_scale,
-                                     scale_b=weight_scale,
-                                     bias=bias)
+        # output, _ = torch._scaled_mm(qinput,
+        #                              weight,
+        #                              out_dtype=input.dtype,
+        #                              scale_a=x_scale,
+        #                              scale_b=weight_scale,
+        #                              bias=bias)
 
+        # TODO: what about bias here?
+        # print(weight)
+        # print(weight.device)
+        # print(weight.shape)
+        # print(weight.is_contiguous())
+        
+        # print(qinput)
+        # print(qinput.shape)
+        
+        
+        # print(input)
+        # print(input.shape)
+
+        output = torch.ops.fbgemm.f8f8bf16_rowwise(qinput,
+                                     weight,
+                                     x_scale,
+                                     weight_scale,
+                                     use_fast_accum=True)
+        # print(output)
+        # print(output.shape)
+        # print(input.shape)
+        # print("weight.shape", weight.shape)
+        # print("input.shape", input.shape)
+        # print("output.shape", output.shape)
     return torch.narrow(output, 0, 0, input.shape[0])
 
 
